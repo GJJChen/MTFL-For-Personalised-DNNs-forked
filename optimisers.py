@@ -213,7 +213,7 @@ class ClientSGD(torch.optim.SGD, ClientOpt):
         if closure is not None:
             loss = closure
 
-        # apply SGD update rule
+        # apply SGD update rules
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:

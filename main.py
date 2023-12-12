@@ -82,24 +82,40 @@ def parse_args():
                         help='Fraction of noisy clients', default=0.0)
 
     # specific arguments for different FL algorithms
+    # argv 是一个包含命令行参数的列表，其中 argv[0] 是脚本的名称，而 argv[1:] 包含了传递给脚本的其余命令行参数。
+
+    # 对于"fedavg"、"fedavg-adam"和"fedadam"算法，需要提供 -bn_private 参数，该参数用于指定要保留为私有的参数。
     if any_in_list(['fedavg', 'fedavg-adam', 'fedadam'], argv):
         parser.add_argument('-bn_private', choices=['usyb', 'us', 'yb', 'none'],
                             required=True,
                             help='Patch parameters to keep private',
                             default='none')
 
+    # 对于"fedadam"算法，需要提供 -server_lr 参数，该参数用于指定服务器的学习率。
     if any_in_list(['fedadam'], argv):
         parser.add_argument('-server_lr', required=True, type=float,
                             help='Server learning rate')
 
+    # 对于"perfedavg"和"pfedme"算法，需要提供 -beta 参数，参数β在pFedMe算法中用于控制全局模型的更新。
+    # 当β=1时，它执行类似于FedAvg的模型平均，将所有客户端的本地模型进行简单平均
+    # 当β的值不为1时，引入了一些个性化的全局模型更新
     if any_in_list(['perfedavg', 'pfedme'], argv):
         parser.add_argument('-beta', required=True, type=float,
                             help='PerFedAvg/pFedMe beta parameter')
 
+    # 对于"pfedme"算法，需要提供 -lamda 参数，λ是一个正则化参数，用于控制全局模型 w 与个性化模型 θi 之间的关系强度。
+    # 大 λ（λ增大）：可以使得不可靠数据的客户端从丰富的数据聚合中受益，因为它强调全局模型 w 对个性化模型的控制。
+    # 小 λ（λ减小）：有助于拥有足够有用数据的客户端更加强调个性化。全局模型对个性化模型的控制较小，使得客户端更容易保留本地数据的特征。
     if 'pfedme' in argv:
         parser.add_argument('-lamda', required=True, type=float,
                             help='pFedMe lambda parameter')
 
+    # beta1：Adam 算法中的一个衰减率，控制一阶矩估计的衰减速度。小beta1使一阶矩的更新更平滑
+    # 通常设置为接近 1 的小值，如 0.9。
+    # beta2：Adam 算法中的一个衰减率，控制二阶矩估计的衰减速度。小beta2使二阶矩的更新更平滑
+    # 通常设置为接近 1 的小值，如 0.999。
+    # epsilon：Adam 算法中的一个小常数，用于防止除零操作。
+    # 通常设置为一个很小的数，如 1e-8。
     if any_in_list(['fedavg-adam', 'fedadam'], argv):
         parser.add_argument('-beta1', required=True, type=float,
                             help='Only required for FedAdam, 0 <= beta1 < 1')
@@ -120,9 +136,12 @@ def main():
 
     args = parse_args()
 
-    torch.set_deterministic(True)
+    # 设置随机种子以进行确定性计算
+    torch.set_deterministic(True) # 设置为确定性计算模式，在相同的输入下，PyTorch 操作将产生相同的输出
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+
+    # 设置设备
     device = torch.device('cuda:0' if args.device == 'gpu' else 'cpu')
 
     # load data 
@@ -132,7 +151,7 @@ def main():
                                  user_test=True)
         model = MNISTModel(device)
         noise_std = 3.0
-        steps_per_E = int(np.round(60000 / (args.W * args.B)))
+        steps_per_E = int(np.round(60000 / (args.W * args.B))) # 每轮本地训练的步数 = 总样本数 / (客户端数 * 客户端批量大小)
 
     else:
         train, test = load_cifar('../CIFAR10_data', args.W,
@@ -143,8 +162,8 @@ def main():
 
     # add noise to data
     noisy_imgs, noisy_idxs = add_noise_to_frac(train[0], args.noisy_frac,
-                                               noise_std)
-    train = (noisy_imgs, train[1])
+                                               noise_std) # 向数据集中的一部分添加噪声
+    train = (noisy_imgs, train[1]) # 噪声图像 + 原始标签
 
     # convert to pytorch tensors
     feeders = [PyTorchDataFeeder(x, torch.float32, y, 'long', device)
@@ -153,12 +172,13 @@ def main():
                  [to_tensor(y, device, 'long') for y in test[1]])
 
     # miscellaneous settings
-    fname = get_fname(args)
-    M = int(args.W * args.C)
-    K = steps_per_E * args.E
+    fname = get_fname(args) # 生成一个文件名，构建一个以下划线分隔的字符串，以 '.pkl' 结尾
+    M = int(args.W * args.C) # 每轮选择的客户端数 = 总客户端数 * 选择比例
+    K = steps_per_E * args.E # 本地训练的总步数 = 每轮本地训练的步数 * 客户端训练轮数
     str_to_bn_setting = {'usyb': 0, 'yb': 1, 'us': 2, 'none': 3}
     if args.alg in ['fedavg', 'fedavg-adam', 'fedadam']:
-        bn_setting = str_to_bn_setting[args.bn_private]
+        bn_setting = str_to_bn_setting[args.bn_private] # 转字符参数换为数字参数
+
 
     # run experiment
     print('Starting experiment...')

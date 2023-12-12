@@ -80,7 +80,10 @@ class PyTorchDataFeeder():
             
         elif self.idx + B > self.n_samples:
             # if batch wraps around to start, add some samples from the start
+            # 如果当前批次结束超过了数据集的末尾，需要特殊处理。
+            # 计算需要从数据集开头补充的额外样本数量 extra。
             extra = (self.idx + B) - self.n_samples
+            # 将当前批次的剩余部分 self.x[self.idx:] 和前面补充的样本 self.x[:extra] 连接起来，形成新的 x。
             x = torch.cat((self.x[self.idx:], self.x[:extra]))
             y = torch.cat((self.y[self.idx:], self.y[:extra]))
             self.shuffle_data()
