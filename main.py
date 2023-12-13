@@ -137,7 +137,11 @@ def main():
     args = parse_args()
 
     # 设置随机种子以进行确定性计算
-    torch.set_deterministic(True) # 设置为确定性计算模式，在相同的输入下，PyTorch 操作将产生相同的输出
+    version = torch.__version__
+    if version < '1.8.0':
+        torch.set_deterministic(True) # 设置为确定性计算模式，在相同的输入下，PyTorch 操作将产生相同的输出
+    else:
+        torch.use_deterministic_algorithms(True)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 

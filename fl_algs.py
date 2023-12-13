@@ -328,7 +328,7 @@ def run_pFedMe( data_feeders, test_data, model, T, M, K, B, R, lamda, eta,
     round_agg   = model.get_params()
     
     # client personalised models
-    user_models = [round_model.copy() for w in range(W)]
+    user_models = [round_model.copy() for w in range(W)] # 循环创建
     
     for t in progressbar(range(T), redirect_stdout=True):
         round_agg = round_agg.zeros_like()
