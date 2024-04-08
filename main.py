@@ -5,12 +5,14 @@ os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 import numpy as np
 import pickle
 import torch
+import time
 from data_utils import *
 from models import *
 from optimisers import *
 import argparse
 from sys import argv
 from fl_algs import *
+from data_visualization.data_visualization import plot_from_file
 
 
 def get_fname(a):
@@ -90,6 +92,7 @@ def parse_args():
                             required=True,
                             help='Patch parameters to keep private',
                             default='none')
+        parser.add_argument('-multi_gates', type=bool, help='If use the multi-gates', default=False, )
 
     # 对于"fedadam"算法，需要提供 -server_lr 参数，该参数用于指定服务器的学习率。
     if any_in_list(['fedadam'], argv):
@@ -110,12 +113,8 @@ def parse_args():
         parser.add_argument('-lamda', required=True, type=float,
                             help='pFedMe lambda parameter')
 
-    # beta1：Adam 算法中的一个衰减率，控制一阶矩估计的衰减速度。小beta1使一阶矩的更新更平滑
-    # 通常设置为接近 1 的小值，如 0.9。
-    # beta2：Adam 算法中的一个衰减率，控制二阶矩估计的衰减速度。小beta2使二阶矩的更新更平滑
-    # 通常设置为接近 1 的小值，如 0.999。
-    # epsilon：Adam 算法中的一个小常数，用于防止除零操作。
-    # 通常设置为一个很小的数，如 1e-8。
+    # β1、β2为Adam的一阶矩估计和二阶矩估计的指数衰减率，推荐值分别为0.9和0.999
+    # ε通常设置为一个很小的数，如 1e-8。目的是防止出现除以0的错误
     if any_in_list(['fedavg-adam', 'fedadam'], argv):
         parser.add_argument('-beta1', required=True, type=float,
                             help='Only required for FedAdam, 0 <= beta1 < 1')
@@ -139,7 +138,7 @@ def main():
     # 设置随机种子以进行确定性计算
     version = torch.__version__
     if version < '1.8.0':
-        torch.set_deterministic(True) # 设置为确定性计算模式，在相同的输入下，PyTorch 操作将产生相同的输出
+        torch.set_deterministic(True)  # 设置为确定性计算模式，在相同的输入下，PyTorch 操作将产生相同的输出
     else:
         torch.use_deterministic_algorithms(True)
     np.random.seed(args.seed)
@@ -151,14 +150,18 @@ def main():
     # load data 
     print('Loading data...')
     if args.dset == 'mnist':
-        train, test = load_mnist('../MNIST_data', args.W, iid=False,
+        train, test = load_mnist('./MNIST_data', args.W, iid=False,
                                  user_test=True)
-        model = MNISTModel(device)
+        if not args.multi_gates:
+            model = MNISTModel(device)
+        else:
+            model = MNISTModel_MultiGates(device)
+
         noise_std = 3.0
-        steps_per_E = int(np.round(60000 / (args.W * args.B))) # 每轮本地训练的步数 = 总样本数 / (客户端数 * 客户端批量大小)
+        steps_per_E = int(np.round(60000 / (args.W * args.B)))  # 每轮本地训练的步数 = 总样本数 / (客户端数 * 客户端批量大小)
 
     else:
-        train, test = load_cifar('../CIFAR10_data', args.W,
+        train, test = load_cifar('./CIFAR10_data', args.W,
                                  iid=False, user_test=True)
         model = CIFAR10Model(device)
         noise_std = 0.2
@@ -166,23 +169,22 @@ def main():
 
     # add noise to data
     noisy_imgs, noisy_idxs = add_noise_to_frac(train[0], args.noisy_frac,
-                                               noise_std) # 向数据集中的一部分添加噪声
-    train = (noisy_imgs, train[1]) # 噪声图像 + 原始标签
+                                               noise_std)  # 向数据集中的一部分添加噪声
+    train = (noisy_imgs, train[1])  # 噪声图像 + 原始标签
 
     # convert to pytorch tensors
     feeders = [PyTorchDataFeeder(x, torch.float32, y, 'long', device)
-               for (x, y) in zip(train[0], train[1])]
+               for (x, y) in zip(train[0], train[1])]  # x 是图像，y 是标签，train[0]是一个含W个元素的列表，每个元素为分配给客户端的数据
     test_data = ([to_tensor(x, device, torch.float32) for x in test[0]],
                  [to_tensor(y, device, 'long') for y in test[1]])
 
     # miscellaneous settings
-    fname = get_fname(args) # 生成一个文件名，构建一个以下划线分隔的字符串，以 '.pkl' 结尾
-    M = int(args.W * args.C) # 每轮选择的客户端数 = 总客户端数 * 选择比例
-    K = steps_per_E * args.E # 本地训练的总步数 = 每轮本地训练的步数 * 客户端训练轮数
+    fname = get_fname(args)  # 生成一个文件名，构建一个以下划线分隔的字符串，以 '.pkl' 结尾
+    M = int(args.W * args.C)  # 每轮选择的客户端数 = 总客户端数 * 选择比例
+    K = steps_per_E * args.E  # 本地训练的总步数 = 每轮本地训练的步数 * 客户端训练轮数
     str_to_bn_setting = {'usyb': 0, 'yb': 1, 'us': 2, 'none': 3}
     if args.alg in ['fedavg', 'fedavg-adam', 'fedadam']:
-        bn_setting = str_to_bn_setting[args.bn_private] # 转字符参数换为数字参数
-
+        bn_setting = str_to_bn_setting[args.bn_private]  # 转字符参数换为数字参数
 
     # run experiment
     print('Starting experiment...')
@@ -226,9 +228,11 @@ def main():
         model.set_optim(client_optim, init_optim=False)
         data = run_per_fedavg(feeders, test_data, model, args.beta, args.T,
                               M, K, args.B, noisy_idxs=noisy_idxs)
-
-    save_data(data, fname)
+    save_dir = os.path.join('results', fname)
+    save_data(data, save_dir)
     print('Data saved to: {}'.format(fname))
+
+    baseline_file_name = 'baseline_mnist_fedadam_C-1.0_B-512_T-500_E-1_W-400_usyb.pkl'
 
 
 if __name__ == '__main__':
