@@ -20,13 +20,13 @@ Requires [MNIST](http:/yann.lecun.com/exdb/mnist/) and [CIFAR10](https://www.cs.
 main.py runs a simulation for a single combination of dataset, algorithm and hyperparameters. Each experiment setting requires different command-line arguments. Will save a `.pkl` file in the same directory containing experiment data as numpy arrays. Example settings to reproduce some of the experiments from the paper are as follows:
 
 FL(FedAvg) on MNIST with 200 workers, C=0.5 participation fraction, for 500 rounds on the GPU (top-left result of Table 2):
-`python main.py -dset mnist -alg fedavg -C 0.5 -B 20 -T 500 -E 1 -device gpu -W 200 -seed 0 -lr 0.1 -noisy_frac 0.0 -bn_private none`
+`python main.py -dset mnist -alg fedavg -C 0.5 -B 20 -T 20 -E 1 -device gpu -W 400 -seed 0 -lr 0.1 -noisy_frac 0.0 -bn_private none`
 
 MTFL(FedAdam) with private u,s,y,B on MNIST with 400 workers, C=1.0 participation rate (also from Table 1), using client learning rate of 0.3, server learning rate 0.01, server Adam parameters beta1=0.9, beta2=0.999, epsilon=1e-4:
-`python main.py -dset mnist -alg fedadam -C 1.0 -B 20 -T 500 -E 1 -device gpu -W 400 -seed 0 -lr 0.3 -noisy_frac 0.0 -bn_private usyb -beta1 0.9 -beta2 0.999 -epsilon 1e-4 -server_lr 0.01`
+`python main.py -dset mnist -alg fedadam -C 1.0 -B 256 -T 20 -E 1 -device gpu -W 200 -seed 0 -lr 0.3 -noisy_frac 0.1 -bn_private usyb -beta1 0.9 -beta2 0.999 -epsilon 1e-4 -server_lr 0.01`
 
 MTFL(FedAdam) with private u,s,y,B and multi-gates on MNIST with 400 workers, C=1.0 participation rate (also from Table 1), using client learning rate of 0.3, server learning rate 0.01, server Adam parameters beta1=0.9, beta2=0.999, epsilon=1e-4:
-`python main.py -dset mnist -alg fedadam -C 1.0 -B 20 -T 500 -E 1 -device gpu -W 40 -seed 0 -lr 0.3 -noisy_frac 0.0 -bn_private usyb -multi_gates True -beta1 0.9 -beta2 0.999 -epsilon 1e-4 -server_lr 0.01`
+`python main.py -dset mnist -alg fedadam -C 1.0 -B 256 -T 20 -E 1 -device gpu -W 200 -seed 0 -lr 0.3 -noisy_frac 0.1 -bn_private usyb -multi_gates True -beta1 0.9 -beta2 0.999 -epsilon 1e-4 -server_lr 0.01`
 
 MTFL(FedAvg-Adam) with private y,b on CIFAR10, 400 workers, C=0.5 participation rate, (also from Table 1), with client learning rate 0.003, client Adam parameters beta1=0.9, beta2=0.999, epsilon=1e-7:
 `python main.py -dset cifar10 -alg fedavg-adam -C 0.5 -B 20 -T 500 -E 1 -device gpu -W 400 -seed 0 -lr 0.003 -noisy_frac 0.0 -bn_private usyb -beta1 0.9 -beta2 0.999 -epsilon 1e-7`

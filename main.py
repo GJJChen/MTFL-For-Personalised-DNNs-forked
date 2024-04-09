@@ -232,7 +232,9 @@ def main():
     save_data(data, save_dir)
     print('Data saved to: {}'.format(fname))
 
-    baseline_file_name = 'baseline_mnist_fedadam_C-1.0_B-512_T-500_E-1_W-400_usyb.pkl'
+    baseline_file_name = 'dset-mnist_alg-fedadam_C-1.0_B-256_T-20_E-1_device-gpu_W-200_seed-0_lr-0.3_noisy_frac-0.1_bn_private-usyb_multi_gates-False_server_lr-0.01_beta1-0.9_beta2-0.999_epsilon-0.0001.pkl'
+    baseline_file_name = os.path.join('results', baseline_file_name)
+    plot_from_file(save_dir, baseline_file_name)
 
 
 if __name__ == '__main__':

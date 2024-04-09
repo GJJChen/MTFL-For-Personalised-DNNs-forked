@@ -3,7 +3,7 @@ import pickle
 import torch
 from progressbar import progressbar
 from models import NumpyModel
-
+# from torch.profiler import profile, record_function, ProfilerActivity
 
 def init_stats_arrays(T):
     """
@@ -60,7 +60,6 @@ def run_fedavg_google(data_feeders, test_data, model, server_opt, T, M,
         weights /= np.sum(weights)
 
         round_n_test_users = 0
-
         for (w, user_idx) in zip(weights, user_idxs):
             # download global model, update local model with private BN params
             model.set_params(round_model)
@@ -125,6 +124,7 @@ def run_fedavg(data_feeders, test_data, model, client_opt,
         Numpy arrays of length T. If test_freq > 1, non-tested rounds will 
         contain 0's.
     """
+
     W = len(data_feeders)
 
     train_errs, train_accs, test_errs, test_accs = init_stats_arrays(T)
@@ -142,6 +142,7 @@ def run_fedavg(data_feeders, test_data, model, client_opt,
     round_opt_agg = client_opt.get_params()
 
     for t in progressbar(range(T)):
+
         round_agg = round_agg.zeros_like()
         round_opt_agg = round_opt_agg.zeros_like()
 
@@ -154,6 +155,7 @@ def run_fedavg(data_feeders, test_data, model, client_opt,
         round_n_test_users = 0
 
         for (w, user_idx) in zip(weights, user_idxs):
+
             # download global model/optim, update with private BN params
             model.set_params(round_model)
             client_opt.set_params(round_optim)

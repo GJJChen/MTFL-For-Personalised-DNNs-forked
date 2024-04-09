@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import operator
 import numbers
-
+# from torch.profiler import profile, record_function, ProfilerActivity
 
 class FLModel(torch.nn.Module):
     """
@@ -204,7 +204,6 @@ class FLModel(torch.nn.Module):
         Returns:
             tupe of floats (loss, acc) calculated during the training step.
         """
-
         logits = self.forward(x)
         loss = self.loss_fn(logits, y)
         acc = self.calc_acc(logits, y)
