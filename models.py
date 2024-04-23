@@ -534,6 +534,18 @@ class GateNetwork_CNN(torch.nn.Module):
         return torch.softmax(x, dim=1).view(-1, 2, 1, 1)
 
 
+class LocalResidualGate(torch.nn.Module):
+    def __init__(self, channels):
+        super(LocalResidualGate, self).__init__()
+        self.conv1x1 = torch.nn.Conv2d(channels, channels, 1)
+        self.gate_network = GateNetwork_CNN(channels)
+
+    def forward(self, x):
+        residual = self.conv1x1(x)
+        gate_weights = self.gate_network(x)
+        return gate_weights[:, 0:1] * x + gate_weights[:, 1:2] * residual
+
+
 class CIFAR10Model_MultiGates(FLModel):
     """
     Convolutional model with two (Conv -> ReLU -> MaxPool -> BN) blocks, and one
@@ -571,11 +583,12 @@ class CIFAR10Model_MultiGates(FLModel):
         self.global_bn1 = torch.nn.BatchNorm2d(64).to(device)
 
         self.gate_network0 = GateNetwork_CNN(32).to(device)
+        self.gate_network1 = GateNetwork_CNN(64).to(device)
 
         self.conv1x1_0 = torch.nn.Conv2d(64, 32, 1).to(device)
-
+        self.conv1x1_1 = torch.nn.Conv2d(128, 64, 1).to(device)
         self.bn_layers = [self.bn0, self.bn1]
-        self.gate_layers = [self.gate_network0]
+        self.gate_layers = [self.gate_network1]
 
     def forward(self, x):
         """
@@ -587,18 +600,25 @@ class CIFAR10Model_MultiGates(FLModel):
         Returns:
             torch.tensor model outputs, shape (batch_size, 10)
         """
-        shared_output0 = self.pool0(self.relu0(self.conv0(x)))
-        local_feat0 = self.bn0(shared_output0)
-        global_feat0 = self.global_bn0(shared_output0)
+        # shared_output0 = self.pool0(self.relu0(self.conv0(x)))
+        # local_feat0 = self.bn0(shared_output0)
+        # global_feat0 = self.global_bn0(shared_output0)
+        #
+        # gate_weights0 = self.gate_network0(shared_output0)
+        # aggregated_feat0 = torch.cat([gate_weights0[:, 0:1] * local_feat0,
+        #                               gate_weights0[:, 1:2] * global_feat0], dim=1)
+        # aggregated_output0 = self.conv1x1_0(aggregated_feat0)
+        a = self.bn0(self.pool0(self.relu0(self.conv0(x))))
+        shared_output1 = self.pool1(self.relu1(self.conv1(a)))
+        local_feat1 = self.bn1(shared_output1)
+        global_feat1 = self.global_bn1(shared_output1)
 
-        gate_weights0 = self.gate_network0(shared_output0)
-        aggregated_feat0 = torch.cat([gate_weights0[:, 0:1] * local_feat0,
-                                      gate_weights0[:, 1:2] * global_feat0], dim=1)
-        aggregated_output0 = self.conv1x1_0(aggregated_feat0)
-
-        b = self.bn1(self.pool1(self.relu1(self.conv1(aggregated_output0))))
-        c = self.relu2(self.fc0(self.flat(b)))
-
+        gate_weights1 = self.gate_network1(shared_output1)
+        aggregated_feat1 = torch.cat([gate_weights1[:, 0:1] * local_feat1,
+                                      gate_weights1[:, 1:2] * global_feat1], dim=1)
+        aggregated_output1 = self.conv1x1_1(aggregated_feat1)
+        # b = self.bn1(self.pool1(self.relu1(self.conv1(aggregated_output0))))
+        c = self.relu2(self.fc0(self.flat(aggregated_output1)))
 
         return self.out(c)
 
