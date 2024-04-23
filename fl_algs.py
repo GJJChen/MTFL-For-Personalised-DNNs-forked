@@ -3,6 +3,8 @@ import pickle
 import torch
 from progressbar import progressbar
 from models import NumpyModel
+
+
 # from torch.profiler import profile, record_function, ProfilerActivity
 
 def init_stats_arrays(T):
@@ -132,6 +134,7 @@ def run_fedavg(data_feeders, test_data, model, client_opt,
     # contains private model and optimiser BN vals (if bn_setting != 3)
     user_bn_model_vals = [model.get_bn_vals(setting=bn_setting) for w in range(W)]
     user_bn_optim_vals = [client_opt.get_bn_params(model) for w in range(W)]
+    user_local_gate_vals = [model.get_local_gate_vals() for w in range(W)]
 
     # global model/optimiser updated at the end of each round
     round_model = model.get_params()
@@ -162,6 +165,7 @@ def run_fedavg(data_feeders, test_data, model, client_opt,
             model.set_bn_vals(user_bn_model_vals[user_idx], setting=bn_setting)
             client_opt.set_bn_params(user_bn_optim_vals[user_idx],
                                      model, setting=bn_setting)
+            model.set_local_gate_vals(user_local_gate_vals[user_idx])
 
             # test local model if not a noisy client
             if (t % test_freq == 0) and (user_idx not in noisy_idxs):
@@ -184,7 +188,7 @@ def run_fedavg(data_feeders, test_data, model, client_opt,
             user_bn_model_vals[user_idx] = model.get_bn_vals(setting=bn_setting)
             user_bn_optim_vals[user_idx] = client_opt.get_bn_params(model,
                                                                     setting=bn_setting)
-
+            user_local_gate_vals[user_idx] = model.get_local_gate_vals()
         # new global model is weighted sum of client models
         round_model = round_agg.copy()
         round_optim = round_opt_agg.copy()

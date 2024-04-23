@@ -2,7 +2,10 @@ import torch
 import numpy as np
 import operator
 import numbers
+
+
 # from torch.profiler import profile, record_function, ProfilerActivity
+
 
 class FLModel(torch.nn.Module):
     """
@@ -20,7 +23,7 @@ class FLModel(torch.nn.Module):
         self.device = device
         self.loss_fn = None
         self.bn_layers = []  # any model BN layers must be added to this
-        self.gates = []  # any model gate networks must be added to this
+        self.local_gates = []  # any model gate networks must be added to this
 
     def set_optim(self, optim, init_optim=True):
         """
@@ -141,32 +144,26 @@ class FLModel(torch.nn.Module):
                 bn.running_var.copy_(torch.tensor(params[i + 1]))
                 i += 2
 
-    def get_gate_vals(self):
+    def get_local_gate_vals(self):
         """
         Returns the parameters from gate networks.
 
         Returns:
-            list of [np.ndarrays] containing gate parameters
+            - list of torch.Tensor containing gate network parameters
         """
-        # vals = []
-        # with torch.no_grad():
-        #     for gate in self.gates:
-        #         vals.append(np.copy(gate.fc_gate.weight.cpu().numpy()))
+        return [gate.parameters() for gate in self.local_gates]
 
-        return self.gates.copy()
-
-    def set_gate_vals(self, vals):
+    def set_local_gate_vals(self, vals):
         """
         Set the gate parameters of the model.
 
         Args:
-            - vals: (NumpyModel) new gate values to set
+            - vals: list of torch.Tensor containing new gate parameters
         """
         with torch.no_grad():
-            i = 0
-            for gate in self.gates:
-                gate.fc_gate.weight.copy_(torch.tensor(vals[i]))
-                i += 1
+            for gate, val in zip(self.local_gates, vals):
+                for param, new_val in zip(gate.parameters(), val):
+                    param.copy_(new_val)
 
     def forward(self, x):
         """
@@ -354,8 +351,12 @@ class MNISTModel_MultiGates(FLModel):
         self.bn_layers = [self.local_bn0]
 
         # multi-gate
-        self.gate_network = GateNetwork(200).to(device)
-        self.gates = [self.gate_network]
+        self.global_gate_network = GateNetwork(200).to(device)
+        self.local_gate_network = GateNetwork(200).to(device)
+        # self.aggregate_weights = torch.nn.Parameter(torch.ones(2, device=device, requires_grad=True))
+        self.aggregate_weights = [0.5, 0.5]
+        self.gate_weights = []
+        self.gates = [self.local_gate_network]
 
     def forward(self, x):
         """
@@ -376,13 +377,25 @@ class MNISTModel_MultiGates(FLModel):
         # 局部和全局BN层的输出
         local_bn_output = self.local_bn0(shared_output)
         global_bn_output = self.global_bn0(shared_output)
+
         # 计算门控权重
-        gate_weights = self.gate_network(shared_output)
+        local_gate_weights = self.local_gate_network(shared_output)
+        global_gate_weights = self.global_gate_network(shared_output)
+
+        # 对各自门控的输出加权
+        local_aggregated_output = local_gate_weights[:, 0:1] * local_bn_output + local_gate_weights[:,
+                                                                                 1:2] * global_bn_output
+        global_aggregated_output = global_gate_weights[:, 0:1] * global_bn_output + global_gate_weights[:,
+                                                                                    1:2] * local_bn_output
+
+        # 加权聚合两个门控的输出
+        aggregated_output = (self.aggregate_weights[0] * local_aggregated_output +
+                             self.aggregate_weights[1] * global_aggregated_output)
 
         # 根据权重聚合BN层的输出
-        aggregated_bn_output = gate_weights[:, 0:1] * local_bn_output + gate_weights[:, 1:2] * global_bn_output
+        # aggregated_bn_output = gate_weights[:, 0:1] * local_bn_output + gate_weights[:, 1:2] * global_bn_output
 
-        expert_output = self.relu1(self.fc1(aggregated_bn_output))
+        expert_output = self.relu1(self.fc1(aggregated_output))
 
         # 输出层
         final_output = self.out(expert_output)
@@ -490,6 +503,147 @@ class CIFAR10Model(FLModel):
                         torch.zeros((2),
                                     device=self.device,
                                     dtype=torch.int32).long())
+
+
+class GateLayer(torch.nn.Module):
+    def __init__(self, in_channels):
+        super(GateLayer, self).__init__()
+        self.conv = torch.nn.Conv2d(in_channels * 2, in_channels, kernel_size=1)
+
+    def forward(self, local_out, global_out):
+        combined = torch.cat([local_out, global_out], dim=1)
+        gate = torch.sigmoid(self.conv(combined))
+        return gate * local_out + (1 - gate) * global_out
+
+
+class GateNetwork_CNN(torch.nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(GateNetwork_CNN, self).__init__()
+        hidden_dim = max(channels // reduction, 8)
+
+        self.avg_pool = torch.nn.AdaptiveAvgPool2d(1)
+        self.fc1 = torch.nn.Linear(channels, hidden_dim)
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.fc2 = torch.nn.Linear(hidden_dim, 2)
+
+    def forward(self, x):
+        x = self.avg_pool(x).view(x.size(0), -1)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return torch.softmax(x, dim=1).view(-1, 2, 1, 1)
+
+
+class CIFAR10Model_MultiGates(FLModel):
+    """
+    Convolutional model with two (Conv -> ReLU -> MaxPool -> BN) blocks, and one
+    fully connected hidden layer. Categorical Cross Entropy loss.
+    """
+
+    def __init__(self, device):
+        """
+        Returns a new CIFAR10Model.
+
+        Args:
+            - device: (torch.device) to place model on
+        """
+        super(CIFAR10Model_MultiGates, self).__init__(device)
+        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='mean')
+
+        self.conv0 = torch.nn.Conv2d(3, 32, 3, 1).to(device)
+        self.relu0 = torch.nn.ReLU().to(device)
+        self.pool0 = torch.nn.MaxPool2d(2, 2).to(device)
+
+        self.conv1 = torch.nn.Conv2d(32, 64, 3, 1).to(device)
+        self.relu1 = torch.nn.ReLU().to(device)
+        self.pool1 = torch.nn.MaxPool2d(2, 2).to(device)
+
+        self.flat = torch.nn.Flatten().to(device)
+        self.fc0 = torch.nn.Linear(2304, 512).to(device)
+        self.relu2 = torch.nn.ReLU().to(device)
+
+        self.out = torch.nn.Linear(512, 10).to(device)
+
+        self.bn0 = torch.nn.BatchNorm2d(32).to(device)
+        self.bn1 = torch.nn.BatchNorm2d(64).to(device)
+
+        self.global_bn0 = torch.nn.BatchNorm2d(32).to(device)
+        self.global_bn1 = torch.nn.BatchNorm2d(64).to(device)
+
+        self.gate_network0 = GateNetwork_CNN(32).to(device)
+
+        self.conv1x1_0 = torch.nn.Conv2d(64, 32, 1).to(device)
+
+        self.bn_layers = [self.bn0, self.bn1]
+        self.gate_layers = [self.gate_network0]
+
+    def forward(self, x):
+        """
+        Returns outputs of model given data x.
+
+        Args:
+            - x: (torch.tensor) must be on same device as model
+
+        Returns:
+            torch.tensor model outputs, shape (batch_size, 10)
+        """
+        shared_output0 = self.pool0(self.relu0(self.conv0(x)))
+        local_feat0 = self.bn0(shared_output0)
+        global_feat0 = self.global_bn0(shared_output0)
+
+        gate_weights0 = self.gate_network0(shared_output0)
+        aggregated_feat0 = torch.cat([gate_weights0[:, 0:1] * local_feat0,
+                                      gate_weights0[:, 1:2] * global_feat0], dim=1)
+        aggregated_output0 = self.conv1x1_0(aggregated_feat0)
+
+        b = self.bn1(self.pool1(self.relu1(self.conv1(aggregated_output0))))
+        c = self.relu2(self.fc0(self.flat(b)))
+
+
+        return self.out(c)
+
+    def calc_acc(self, logits, y):
+        """
+        Calculate top-1 accuracy of model.
+
+        Args:
+            - logits: (torch.tensor) unnormalised predictions of y
+            - y:      (torch.tensor) true values
+
+        Returns:
+            torch.tensor containing scalar value.
+        """
+        return (torch.argmax(logits, dim=1) == y).float().mean()
+
+    def empty_step(self):
+        """
+        Perform one step of SGD with all-0 inputs and targets to initialise
+        optimiser parameters.
+        """
+        self.train_step(torch.zeros((2, 3, 32, 32),
+                                    device=self.device,
+                                    dtype=torch.float32),
+                        torch.zeros((2),
+                                    device=self.device,
+                                    dtype=torch.int32).long())
+
+    def set_global_bn_params(self, global_params):
+        self.global_bn0.load_state_dict(global_params[0])
+        self.global_bn1.load_state_dict(global_params[1])
+
+    def get_bn_params(self):
+        return [self.bn0.state_dict(), self.bn1.state_dict()]
+
+    def set_bn_params(self, params):
+        self.bn0.load_state_dict(params[0])
+        self.bn1.load_state_dict(params[1])
+
+    def set_local_gate_vals(self, vals):
+        for i, gate in enumerate(self.gate_layers):
+            gate.conv.weight.copy_(torch.tensor(vals[i]))
+
+    def get_local_gate_vals(self):
+        return [gate.conv.weight.cpu().numpy() for gate in self.gate_layers]
 
 
 class NumpyModel():
