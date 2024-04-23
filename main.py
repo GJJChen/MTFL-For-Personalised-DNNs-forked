@@ -1,3 +1,4 @@
+import datetime
 import os
 
 # required for pytorch deterministic GPU behaviour
@@ -153,9 +154,9 @@ def main():
         train, test = load_mnist('./MNIST_data', args.W, iid=False,
                                  user_test=True)
         if not args.multi_gates:
-            model = MNISTModel(device)
+            model = MNISTModel(device).to(device)
         else:
-            model = MNISTModel_MultiGates(device)
+            model = MNISTModel_MultiGates(device).to(device)
 
         noise_std = 3.0
         steps_per_E = int(np.round(60000 / (args.W * args.B)))  # 每轮本地训练的步数 = 总样本数 / (客户端数 * 客户端批量大小)
@@ -163,7 +164,10 @@ def main():
     else:
         train, test = load_cifar('./CIFAR10_data', args.W,
                                  iid=False, user_test=True)
-        model = CIFAR10Model(device)
+        if not args.multi_gates:
+            model = CIFAR10Model(device).to(device)
+        else:
+            model = CIFAR10Model_MultiGates(device).to(device)
         noise_std = 0.2
         steps_per_E = int(np.round(50000 / (args.W * args.B)))
 
@@ -185,6 +189,14 @@ def main():
     str_to_bn_setting = {'usyb': 0, 'yb': 1, 'us': 2, 'none': 3}
     if args.alg in ['fedavg', 'fedavg-adam', 'fedadam']:
         bn_setting = str_to_bn_setting[args.bn_private]  # 转字符参数换为数字参数
+
+    # final check
+    # 检查 baseline_file 是否存在
+    baseline_file_name = 'dset-cifar10_alg-fedadam_C-1.0_B-200_T-40_E-1_device-gpu_W-20_seed-0_lr-0.15_noisy_frac-0.0_bn_private-usyb_multi_gates-False_server_lr-0.01_beta1-0.9_beta2-0.999_epsilon-0.0001.pkl'
+    baseline_file_name = os.path.join('results', 'baseline_data', baseline_file_name)
+    if not os.path.exists(baseline_file_name):
+        print(f"The baseline file {baseline_file_name} does not exist. Not specifying baseline_file_name.")
+        baseline_file_name = None
 
     # run experiment
     print('Starting experiment...')
@@ -228,13 +240,22 @@ def main():
         model.set_optim(client_optim, init_optim=False)
         data = run_per_fedavg(feeders, test_data, model, args.beta, args.T,
                               M, K, args.B, noisy_idxs=noisy_idxs)
-    save_dir = os.path.join('results', fname)
-    save_data(data, save_dir)
-    print('Data saved to: {}'.format(fname))
 
-    baseline_file_name = 'dset-mnist_alg-fedadam_C-1.0_B-256_T-20_E-1_device-gpu_W-200_seed-0_lr-0.3_noisy_frac-0.1_bn_private-usyb_multi_gates-False_server_lr-0.01_beta1-0.9_beta2-0.999_epsilon-0.0001.pkl'
-    baseline_file_name = os.path.join('results', baseline_file_name)
-    plot_from_file(save_dir, baseline_file_name)
+    # 保存数据
+    # 获取当前时间并格式化为字符串
+    now = datetime.datetime.now()
+    folder_name = now.strftime("%Y%m%d_%H%M%S")
+    folder_name = os.path.join('results', folder_name)
+
+    # 创建以当前时间命名的文件夹
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+
+    save_dir = os.path.join(folder_name, fname)
+    save_data(data, save_dir)
+    print('Data saved to: {}'.format(save_dir))
+
+    plot_from_file(save_dir, baseline_file_name, folder_name)
 
 
 if __name__ == '__main__':
