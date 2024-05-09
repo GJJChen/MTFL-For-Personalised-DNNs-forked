@@ -14,6 +14,7 @@ import argparse
 from sys import argv
 from fl_algs import *
 from data_visualization.data_visualization import plot_from_file
+from data_visualization import data_visualization as dv
 
 
 def get_fname(a):
@@ -129,6 +130,34 @@ def parse_args():
     return args
 
 
+def simplify_filename(filename):
+    # 通用地去掉文件名的扩展名
+    filename, suffix = os.path.splitext(filename)
+    # 定义要保留的关键字列表
+    keep_keywords = ['B-', 'W-', 'lr-', 'bn', 'private-', 'multi', 'gates-']
+
+    # 将文件名以下划线分割成多个部分
+    parts = filename.split('_')
+
+    # 初始化简化后的文件名列表
+    simplified_filename = []
+
+    # 遍历每个部分，检查是否包含关键字
+    for part in parts:
+        # 特别处理 'dset-' 和 'alg-' 前缀
+        if 'dset-' in part or 'alg-' in part:
+            # 提取并保留 'dset-' 或 'alg-' 后的值
+            simplified_filename.append(part.split('-')[-1])
+        elif any(keyword in part for keyword in keep_keywords):
+            # 对其他关键字进行检查，并保留含有关键字的部分
+            simplified_filename.append(part)
+
+    # 使用下划线连接所有选中的部分，并添加'.pkl'扩展名
+    simplified_filename = '_'.join(simplified_filename) + suffix
+
+    return simplified_filename
+
+
 def main():
     """
     Run experiment specified by command-line args.
@@ -151,6 +180,7 @@ def main():
     # load data 
     print('Loading data...')
     if args.dset == 'mnist':
+        dataset_name = 'MNIST'
         train, test = load_mnist('./MNIST_data', args.W, iid=False,
                                  user_test=True)
         if not args.multi_gates:
@@ -162,12 +192,16 @@ def main():
         steps_per_E = int(np.round(60000 / (args.W * args.B)))  # 每轮本地训练的步数 = 总样本数 / (客户端数 * 客户端批量大小)
 
     else:
+        dataset_name = 'CIFAR10'
         train, test = load_cifar('./CIFAR10_data', args.W,
                                  iid=False, user_test=True)
-        if not args.multi_gates:
-            model = CIFAR10Model(device).to(device)
+        if hasattr(args, 'multi_gates'):
+            if not args.multi_gates:
+                model = CIFAR10Model(device).to(device)
+            else:
+                model = CIFAR10Model_MultiGates(device).to(device)
         else:
-            model = CIFAR10Model_MultiGates(device).to(device)
+            model = CIFAR10Model(device).to(device)
         noise_std = 0.2
         steps_per_E = int(np.round(50000 / (args.W * args.B)))
 
@@ -192,7 +226,7 @@ def main():
 
     # final check
     # 检查 baseline_file 是否存在
-    baseline_file_name = 'dset-cifar10_alg-fedadam_C-1.0_B-200_T-40_E-1_device-gpu_W-20_seed-0_lr-0.15_noisy_frac-0.0_bn_private-usyb_multi_gates-False_server_lr-0.01_beta1-0.9_beta2-0.999_epsilon-0.0001.pkl'
+    baseline_file_name = 'MNIST_MTFL-FedAdam.pkl'
     baseline_file_name = os.path.join('results', 'baseline_data', baseline_file_name)
     if not os.path.exists(baseline_file_name):
         print(f"The baseline file {baseline_file_name} does not exist. Not specifying baseline_file_name.")
@@ -255,7 +289,15 @@ def main():
     save_data(data, save_dir)
     print('Data saved to: {}'.format(save_dir))
 
-    plot_from_file(save_dir, baseline_file_name, folder_name)
+    # plot_from_file(save_dir, baseline_file_name, folder_name)
+
+    # 根据数据集将文件名简化为更易读的格式
+    simplified_fname = simplify_filename(fname)
+
+    # 将数据复制到results/ComparisonExperiment的对应文件夹
+    save_dir = os.path.join('results', 'ComparisonExperiment', dataset_name, simplified_fname)
+    save_data(data, save_dir)
+    dv.plot_all(os.path.join('results', 'ComparisonExperiment', dataset_name), dv.load_data)
 
 
 if __name__ == '__main__':

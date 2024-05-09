@@ -237,19 +237,6 @@ class FLModel(torch.nn.Module):
         return loss / n_batches, acc / n_batches
 
 
-class GateNetwork(torch.nn.Module):
-    def __init__(self, input_size):
-        super(GateNetwork, self).__init__()
-        # 假设门控网络有一个简单的线性层
-        self.fc_gate = torch.nn.Linear(input_size, 2)  # 输出2个权重
-
-    def forward(self, x):
-        gate_output = self.fc_gate(x)
-        # 使用softmax激活函数来确保权重的总和为1
-        gate_weights = torch.softmax(gate_output, dim=1)
-        return gate_weights
-
-
 class MNISTModel(FLModel):
     """
     2-hidden-layer fully connected model, 2 hidden layers with 200 units and a 
@@ -320,6 +307,19 @@ class MNISTModel(FLModel):
                                     dtype=torch.int32).long())
 
 
+class GateNetwork(torch.nn.Module):
+    def __init__(self, input_size):
+        super(GateNetwork, self).__init__()
+        # 假设门控网络有一个简单的线性层
+        self.fc_gate = torch.nn.Linear(input_size, 2)  # 输出2个权重
+
+    def forward(self, x):
+        gate_output = self.fc_gate(x)
+        # 使用softmax激活函数来确保权重的总和为1
+        gate_weights = torch.softmax(gate_output, dim=1)
+        return gate_weights
+
+
 class MNISTModel_MultiGates(FLModel):
     """
     2-hidden-layer fully connected model, 2 hidden layers with 200 units and a
@@ -351,11 +351,7 @@ class MNISTModel_MultiGates(FLModel):
         self.bn_layers = [self.local_bn0]
 
         # multi-gate
-        self.global_gate_network = GateNetwork(200).to(device)
         self.local_gate_network = GateNetwork(200).to(device)
-        # self.aggregate_weights = torch.nn.Parameter(torch.ones(2, device=device, requires_grad=True))
-        self.aggregate_weights = [0.5, 0.5]
-        self.gate_weights = []
         self.gates = [self.local_gate_network]
 
     def forward(self, x):
@@ -376,26 +372,15 @@ class MNISTModel_MultiGates(FLModel):
 
         # 局部和全局BN层的输出
         local_bn_output = self.local_bn0(shared_output)
-        global_bn_output = self.global_bn0(shared_output)
-
+        # global_bn_output = self.global_bn0(shared_output)
         # 计算门控权重
-        local_gate_weights = self.local_gate_network(shared_output)
-        global_gate_weights = self.global_gate_network(shared_output)
-
-        # 对各自门控的输出加权
-        local_aggregated_output = local_gate_weights[:, 0:1] * local_bn_output + local_gate_weights[:,
-                                                                                 1:2] * global_bn_output
-        global_aggregated_output = global_gate_weights[:, 0:1] * global_bn_output + global_gate_weights[:,
-                                                                                    1:2] * local_bn_output
-
-        # 加权聚合两个门控的输出
-        aggregated_output = (self.aggregate_weights[0] * local_aggregated_output +
-                             self.aggregate_weights[1] * global_aggregated_output)
-
+        gate_weights = self.local_gate_network(shared_output)
         # 根据权重聚合BN层的输出
         # aggregated_bn_output = gate_weights[:, 0:1] * local_bn_output + gate_weights[:, 1:2] * global_bn_output
+        # 残差连接
+        aggregated_bn_output = gate_weights[:, 0:1] * local_bn_output + gate_weights[:, 1:2] * shared_output
 
-        expert_output = self.relu1(self.fc1(aggregated_output))
+        expert_output = self.relu1(self.fc1(aggregated_bn_output))
 
         # 输出层
         final_output = self.out(expert_output)
@@ -426,6 +411,19 @@ class MNISTModel_MultiGates(FLModel):
                         torch.zeros(2,
                                     device=self.device,
                                     dtype=torch.int32).long())
+
+
+class LocalResidualGate_Linear(torch.nn.Module):
+    def __init__(self, channels):
+        super(LocalResidualGate_Linear, self).__init__()
+        self.conv1x1 = torch.nn.Conv2d(channels, channels, 1)
+        self.gate_network = GateNetwork_CNN(channels)
+        self.bn0 = torch.nn.BatchNorm2d(channels).to("cuda:0")
+
+    def forward(self, x):
+        residual = self.conv1x1(self.bn0(x))
+        gate_weights = self.gate_network(x)
+        return gate_weights[:, 0:1] * x + gate_weights[:, 1:2] * residual
 
 
 class CIFAR10Model(FLModel):
@@ -539,11 +537,12 @@ class LocalResidualGate(torch.nn.Module):
         super(LocalResidualGate, self).__init__()
         self.conv1x1 = torch.nn.Conv2d(channels, channels, 1)
         self.gate_network = GateNetwork_CNN(channels)
+        self.bn0 = torch.nn.BatchNorm2d(channels).to("cuda:0")
 
     def forward(self, x):
         residual = self.conv1x1(x)
         gate_weights = self.gate_network(x)
-        return gate_weights[:, 0:1] * x + gate_weights[:, 1:2] * residual
+        return gate_weights[:, 0:1] * self.bn0(x) + gate_weights[:, 1:2] * residual
 
 
 class CIFAR10Model_MultiGates(FLModel):
@@ -580,15 +579,17 @@ class CIFAR10Model_MultiGates(FLModel):
         self.bn1 = torch.nn.BatchNorm2d(64).to(device)
 
         self.global_bn0 = torch.nn.BatchNorm2d(32).to(device)
-        self.global_bn1 = torch.nn.BatchNorm2d(64).to(device)
+        # self.global_bn1 = torch.nn.BatchNorm2d(64).to(device)
 
         self.gate_network0 = GateNetwork_CNN(32).to(device)
-        self.gate_network1 = GateNetwork_CNN(64).to(device)
-
+        # self.gate_network1 = GateNetwork_CNN(64).to(device)
+        self.local_residual_gate0 = LocalResidualGate(32).to(device)
+        self.local_residual_gate1 = LocalResidualGate(64).to(device)
         self.conv1x1_0 = torch.nn.Conv2d(64, 32, 1).to(device)
-        self.conv1x1_1 = torch.nn.Conv2d(128, 64, 1).to(device)
+        # self.conv1x1_1 = torch.nn.Conv2d(128, 64, 1).to(device)
         self.bn_layers = [self.bn0, self.bn1]
-        self.gate_layers = [self.gate_network1]
+        # self.gate_layers = [self.local_residual_gate0, self.local_residual_gate1]
+        self.gate_layers = [self.gate_network0]
 
     def forward(self, x):
         """
@@ -600,26 +601,18 @@ class CIFAR10Model_MultiGates(FLModel):
         Returns:
             torch.tensor model outputs, shape (batch_size, 10)
         """
-        # shared_output0 = self.pool0(self.relu0(self.conv0(x)))
-        # local_feat0 = self.bn0(shared_output0)
-        # global_feat0 = self.global_bn0(shared_output0)
-        #
-        # gate_weights0 = self.gate_network0(shared_output0)
-        # aggregated_feat0 = torch.cat([gate_weights0[:, 0:1] * local_feat0,
-        #                               gate_weights0[:, 1:2] * global_feat0], dim=1)
-        # aggregated_output0 = self.conv1x1_0(aggregated_feat0)
-        a = self.bn0(self.pool0(self.relu0(self.conv0(x))))
-        shared_output1 = self.pool1(self.relu1(self.conv1(a)))
-        local_feat1 = self.bn1(shared_output1)
-        global_feat1 = self.global_bn1(shared_output1)
+        shared_output0 = self.pool0(self.relu0(self.conv0(x)))
 
-        gate_weights1 = self.gate_network1(shared_output1)
-        aggregated_feat1 = torch.cat([gate_weights1[:, 0:1] * local_feat1,
-                                      gate_weights1[:, 1:2] * global_feat1], dim=1)
-        aggregated_output1 = self.conv1x1_1(aggregated_feat1)
-        # b = self.bn1(self.pool1(self.relu1(self.conv1(aggregated_output0))))
-        c = self.relu2(self.fc0(self.flat(aggregated_output1)))
+        # local_feat0 = self.local_residual_gate0(shared_output0)
+        # b = self.bn1(self.pool1(self.relu1(self.conv1(local_feat0))))
 
+        local_feat0 = self.bn0(shared_output0)
+        global_feat0 = self.global_bn0(shared_output0)
+        gate_weights0 = self.gate_network0(shared_output0)
+        aggregated_feat0 = gate_weights0[:, 0:1] * local_feat0 + gate_weights0[:, 1:2] * global_feat0
+        b = self.bn1(self.pool1(self.relu1(self.conv1(aggregated_feat0))))
+
+        c = self.relu2(self.fc0(self.flat(b)))
         return self.out(c)
 
     def calc_acc(self, logits, y):
@@ -647,23 +640,16 @@ class CIFAR10Model_MultiGates(FLModel):
                                     device=self.device,
                                     dtype=torch.int32).long())
 
-    def set_global_bn_params(self, global_params):
-        self.global_bn0.load_state_dict(global_params[0])
-        self.global_bn1.load_state_dict(global_params[1])
-
-    def get_bn_params(self):
-        return [self.bn0.state_dict(), self.bn1.state_dict()]
-
     def set_bn_params(self, params):
         self.bn0.load_state_dict(params[0])
         self.bn1.load_state_dict(params[1])
 
     def set_local_gate_vals(self, vals):
         for i, gate in enumerate(self.gate_layers):
-            gate.conv.weight.copy_(torch.tensor(vals[i]))
+            gate.load_state_dict(vals[i])
 
     def get_local_gate_vals(self):
-        return [gate.conv.weight.cpu().numpy() for gate in self.gate_layers]
+        return [gate.state_dict() for gate in self.gate_layers]
 
 
 class NumpyModel():
