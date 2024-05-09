@@ -3,6 +3,8 @@ import pickle
 import torch
 from progressbar import progressbar
 from models import NumpyModel
+import torch.nn.functional as F
+from torch.nn.functional import kl_div
 
 
 # from torch.profiler import profile, record_function, ProfilerActivity
@@ -51,6 +53,7 @@ def run_fedavg_google(data_feeders, test_data, model, server_opt, T, M,
 
     # contains private BN vals (if bn_setting != 3)
     user_bn_model_vals = [model.get_bn_vals(bn_setting) for w in range(W)]
+    user_local_gate_vals = [model.get_local_gate_vals() for w in range(W)]
 
     for t in progressbar(range(T)):
         round_grads = round_grads.zeros_like()  # round psuedogradient
@@ -66,7 +69,7 @@ def run_fedavg_google(data_feeders, test_data, model, server_opt, T, M,
             # download global model, update local model with private BN params
             model.set_params(round_model)
             model.set_bn_vals(user_bn_model_vals[user_idx], bn_setting)
-
+            model.set_local_gate_vals(user_local_gate_vals[user_idx])
             # test local model if not a noisy client
             if (t % test_freq == 0) and (user_idx not in noisy_idxs):
                 err, acc = model.test(test_data[0][user_idx],
@@ -85,7 +88,7 @@ def run_fedavg_google(data_feeders, test_data, model, server_opt, T, M,
             # upload local model to server, store private BN params
             round_grads = round_grads + ((round_model - model.get_params()) * w)
             user_bn_model_vals[user_idx] = model.get_bn_vals(bn_setting)
-
+            user_local_gate_vals[user_idx] = model.get_local_gate_vals()
         # update global model using psuedogradient
         round_model = server_opt.apply_gradients(round_model, round_grads)
 
@@ -383,3 +386,136 @@ def run_pFedMe(data_feeders, test_data, model, T, M, K, B, R, lamda, eta,
             test_accs[t] /= round_n_test_users
 
     return test_errs, test_accs
+
+
+def run_fedavg_adaptive(data_feeders, test_data, model, client_opt,
+                        T, M, K, B, test_freq=1, bn_setting=0, noisy_idxs=[],
+                        theta=0.001, lambda_=0.1, temp=1.0):
+    """
+    Run adaptive weighted FedAvg algorithm. Incorporates client model performance,
+    data distribution difference, and convergence threshold into the aggregation.
+
+    Additional Args:
+        - theta:    (float) convergence threshold for model performance
+        - lambda_:  (float) decay coefficient for data distribution difference weight
+        - temp:     (float) temperature coefficient for model performance weight
+    """
+
+    W = len(data_feeders)
+
+    train_errs, train_accs, test_errs, test_accs = init_stats_arrays(T)
+
+    user_bn_model_vals = [model.get_bn_vals(setting=bn_setting) for w in range(W)]
+    user_bn_optim_vals = [client_opt.get_bn_params(model) for w in range(W)]
+    user_local_gate_vals = [model.get_local_gate_vals() for w in range(W)]
+
+    round_model = model.get_params()
+    round_optim = client_opt.get_params()
+
+    round_agg = model.get_params()
+    round_opt_agg = client_opt.get_params()
+
+    # sample representative dataset from clients
+    rep_data = sample_representative_data(data_feeders)
+
+    for t in progressbar(range(T)):
+
+        round_agg = round_agg.zeros_like()
+        round_opt_agg = round_opt_agg.zeros_like()
+
+        user_idxs = np.random.choice(W, M, replace=False)
+        weights = np.array([data_feeders[u].n_samples for u in user_idxs])
+        weights = weights.astype(np.float32)
+        weights /= np.sum(weights)
+
+        round_n_test_users = 0
+        perf_weights = np.zeros(M)
+        dist_weights = np.zeros(M)
+        combined_weights = np.zeros(M)
+
+        for i, (w, user_idx) in enumerate(zip(weights, user_idxs)):
+
+            model.set_params(round_model)
+            client_opt.set_params(round_optim)
+            model.set_bn_vals(user_bn_model_vals[user_idx], setting=bn_setting)
+            client_opt.set_bn_params(user_bn_optim_vals[user_idx],
+                                     model, setting=bn_setting)
+            model.set_local_gate_vals(user_local_gate_vals[user_idx])
+
+            if (t % test_freq == 0) and (user_idx not in noisy_idxs):
+                err, acc = model.test(test_data[0][user_idx],
+                                      test_data[1][user_idx], 128)
+                test_errs[t] += err
+                test_accs[t] += acc
+                round_n_test_users += 1
+
+                perf_weights[i] = acc
+                dist_weights[i] = calc_dist_diff(model, rep_data)
+
+            for k in range(K):
+                x, y = data_feeders[user_idx].next_batch(B)
+                err, acc = model.train_step(x, y)
+                train_errs[t] += err
+                train_accs[t] += acc
+
+            round_agg = round_agg + (model.get_params() * w)
+            round_opt_agg = round_opt_agg + (client_opt.get_params() * w)
+            user_bn_model_vals[user_idx] = model.get_bn_vals(setting=bn_setting)
+            user_bn_optim_vals[user_idx] = client_opt.get_bn_params(model,
+                                                                    setting=bn_setting)
+            user_local_gate_vals[user_idx] = model.get_local_gate_vals()
+
+        if t % test_freq == 0:
+            test_errs[t] /= round_n_test_users
+            test_accs[t] /= round_n_test_users
+
+            perf_weights = softmax(perf_weights / temp)
+            dist_weights = np.exp(-lambda_ * dist_weights)
+            combined_weights = perf_weights * dist_weights
+            combined_weights /= np.sum(combined_weights)  # normalize combined_weights
+
+            round_agg *= 0
+            round_opt_agg *= 0
+
+            for i, user_idx in enumerate(user_idxs):
+                if perf_weights[i] >= theta:
+                    round_agg = round_agg + (model.get_params() * combined_weights[i])
+                    round_opt_agg = round_opt_agg + (client_opt.get_params() * combined_weights[i])
+
+            round_agg /= np.sum(combined_weights)
+            round_opt_agg /= np.sum(combined_weights)
+
+        round_model = round_agg.copy()
+        round_optim = round_opt_agg.copy()
+
+    train_errs /= M * K
+    train_accs /= M * K
+
+    return train_errs, train_accs, test_errs, test_accs
+
+
+def sample_representative_data(data_feeders, n_samples=100):
+    rep_data = []
+    for feeder in data_feeders:
+        x, y = feeder.next_batch(n_samples // len(data_feeders))
+        rep_data.append((x.float(), y))
+    return rep_data
+
+
+def calc_dist_diff(model, rep_data):
+    """Calculate data distribution difference"""
+    diffs = []
+    for x, y in rep_data:
+        logits = model(x)
+        probs = F.softmax(logits, dim=-1)
+
+        # 将标签张量转换为 one-hot 编码的概率分布
+        y_one_hot = F.one_hot(y, num_classes=probs.size(-1)).float()
+
+        diffs.append(kl_div(probs, y_one_hot, reduction='batchmean'))
+    return torch.mean(torch.stack(diffs))
+
+
+def softmax(x, axis=-1):
+    """Compute softmax values"""
+    return np.exp(x) / np.sum(np.exp(x), axis=axis, keepdims=True)
